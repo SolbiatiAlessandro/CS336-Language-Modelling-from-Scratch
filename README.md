@@ -74,3 +74,37 @@ probability (`p_max`) across the generated tokens. Useful flags:
 
 Generation runs on Apple Silicon (`mps`). If you pass a path to a local file
 instead of a volume filename, it loads from disk directly.
+
+## Web UI
+
+`serve.py` wraps the same `inference.py` code in a small local web app — a
+ChatGPT-style chat on the left, a live model/training panel on the right, and a
+per-token `p_max` / `entropy` plot for every generation.
+
+```bash
+uv run serve.py            # → http://127.0.0.1:8000
+uv run serve.py --port 8080
+```
+
+It's plumbing only: `serve.py` streams the checkpoint from the Modal volume into
+memory via `inference.load_model`, then drives the verbatim `inference.generate`
+decoding loop — no model code is duplicated. On startup the page renders
+immediately and shows a `streaming → loading → ready` status while the checkpoint
+loads on `mps` in the background.
+
+The right-hand panel shows:
+
+- **Model** — parameter count, architecture (layers, `d_model`, heads, `d_ff`,
+  vocab, context), device, and the checkpoint's train step.
+- **Training · W&B** — best and final train/val losses and the loss curve, pulled
+  live from the leaderboard run [`lessandro/cs336/zzd4j6h7`](https://wandb.ai/lessandro/cs336/runs/zzd4j6h7).
+- **Last generation** — average `p_max` / `entropy` plus a per-token chart of both
+  (watch confidence rise as the model commits to a continuation).
+
+The checkpoint dropdown in the header switches between the final, 10%, and
+untrained snapshots of the run (each streamed on demand) — a quick way to *see*
+the entropy collapse from ~10.3 nats (untrained, uniform over 32k vocab) to ~2
+nats as the model learns.
+
+Credentials come from your environment — `~/.modal.toml` for Modal and `~/.netrc`
+for W&B. No keys are stored in the repo.

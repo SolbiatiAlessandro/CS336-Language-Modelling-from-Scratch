@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CS336 · chat with your checkpoint</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --panel-2: #171b24;
+    --border: #232938;
+    --text: #e7eaf0;
+    --muted: #8b93a7;
+    --accent: #6ea8fe;
+    --accent-2: #f0883e;
+    --green: #4ade80;
+    --user: #1f2a44;
+    --assistant: #161b25;
+    --shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px; border-bottom: 1px solid var(--border);
+    background: var(--panel); flex: none;
+  }
+  header h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: .2px; }
+  header h1 .dim { color: var(--muted); font-weight: 400; }
+  .grow { flex: 1; }
+  select, button, input, textarea {
+    font-family: inherit; color: var(--text);
+  }
+  select {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 20px; font-size: 12px; font-weight: 550;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    white-space: nowrap;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.busy { background: var(--accent-2); animation: pulse 1.1s infinite; }
+  .dot.ready { background: var(--green); }
+  .dot.error { background: #f87171; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  main { flex: 1; display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } .side { display:none; } }
+
+  /* ---- chat column ---- */
+  .chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+  .messages { flex: 1; overflow-y: auto; padding: 24px 0; }
+  .msg-row { padding: 6px 22px; }
+  .msg { max-width: 760px; margin: 0 auto; display: flex; gap: 14px; }
+  .avatar {
+    width: 28px; height: 28px; border-radius: 7px; flex: none;
+    display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  }
+  .avatar.user { background: var(--user); color: #9db4e8; }
+  .avatar.bot { background: #243; color: var(--green); }
+  .bubble { white-space: pre-wrap; word-wrap: break-word; padding-top: 3px; }
+  .bubble .prompt-prefix { color: var(--muted); }
+  .msg-meta { max-width: 760px; margin: 4px auto 0; padding-left: 42px; font-size: 11.5px; color: var(--muted); display: flex; gap: 14px; }
+  .msg-meta b { color: var(--text); font-weight: 600; }
+  .empty {
+    max-width: 560px; margin: 8vh auto 0; text-align: center; color: var(--muted);
+  }
+  .empty h2 { color: var(--text); font-weight: 650; margin-bottom: 6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
+  .chip {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 10px; padding: 9px 13px; font-size: 13px; cursor: pointer; text-align: left;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .typing { display: inline-flex; gap: 4px; align-items: center; }
+  .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+  .typing span:nth-child(2){ animation-delay:.2s } .typing span:nth-child(3){ animation-delay:.4s }
+  @keyframes blink { 0%,80%,100%{opacity:.25} 40%{opacity:1} }
+
+  /* ---- composer ---- */
+  .composer { border-top: 1px solid var(--border); background: var(--panel); padding: 12px 22px 16px; flex: none; }
+  .composer-inner { max-width: 760px; margin: 0 auto; }
+  .input-wrap {
+    display: flex; gap: 10px; align-items: flex-end;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 14px; padding: 8px 8px 8px 14px;
+  }
+  .input-wrap:focus-within { border-color: var(--accent); }
+  textarea#prompt {
+    flex: 1; background: transparent; border: none; outline: none; resize: none;
+    font-size: 14px; line-height: 1.5; max-height: 200px; color: var(--text);
+  }
+  button#send {
+    flex: none; width: 36px; height: 36px; border-radius: 9px; border: none;
+    background: var(--accent); color: #06101f; font-size: 17px; cursor: pointer;
+  }
+  button#send:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+  .controls { display: flex; gap: 18px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  .ctrl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .ctrl input[type=range] { width: 96px; accent-color: var(--accent); }
+  .ctrl b { color: var(--text); font-variant-numeric: tabular-nums; min-width: 30px; display: inline-block; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 8px; text-align: center; }
+
+  /* ---- side panel ---- */
+  .side { overflow-y: auto; background: var(--panel); padding: 16px 16px 40px; }
+  .card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); font-weight: 650; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px; border-bottom: 1px dashed rgba(255,255,255,.04); }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--muted); } .kv .v { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; }
+  .stat .label { font-size: 11px; color: var(--muted); }
+  .stat .num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .num small { font-size: 11px; color: var(--muted); font-weight: 500; }
+  .stat.train .num { color: var(--accent); } .stat.val .num { color: var(--accent-2); }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  .chart-box { position: relative; height: 150px; margin-top: 6px; }
+  .muted-note { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+  .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin: 8px 0 2px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  .placeholder { color: var(--muted); font-size: 12.5px; text-align: center; padding: 18px 0; }
+  code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CS336 <span class="dim">· chat with your checkpoint</span></h1>
+  <div class="grow"></div>
+  <select id="ckpt-select" title="Checkpoint"></select>
+  <span class="pill" id="status-pill"><span class="dot" id="status-dot"></span><span id="status-text">starting…</span></span>
+</header>
+
+<main>
+  <!-- chat -->
+  <section class="chat">
+    <div class="messages" id="messages">
+      <div class="empty" id="empty">
+        <h2>Talk to a base language model</h2>
+        <div>This is a 6-layer Transformer trained from scratch on OpenWebText.
+          It's a <b>base completion model</b> — type the start of something and it continues it.</div>
+        <div class="chips" id="chips"></div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="input-wrap">
+          <textarea id="prompt" rows="1" placeholder="The history of the Roman Empire" disabled></textarea>
+          <button id="send" disabled title="Send (Enter)">↑</button>
+        </div>
+        <div class="controls">
+          <label class="ctrl">max tokens <input type="range" id="max_tokens" min="16" max="400" step="8" value="150"><b id="max_tokens_v">150</b></label>
+          <label class="ctrl">temp <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="0.7"><b id="temperature_v">0.70</b></label>
+          <label class="ctrl">top-p <input type="range" id="top_p" min="0.1" max="1.0" step="0.05" value="0.9"><b id="top_p_v">0.90</b></label>
+        </div>
+        <div class="hint">Enter to send · Shift+Enter for newline · runs on <b>mps</b></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- info panel -->
+  <aside class="side">
+    <div class="card">
+      <h3>Model</h3>
+      <div id="model-card"><div class="placeholder">streaming checkpoint…</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Training · Weights &amp; Biases</h3>
+      <div id="wandb-card"><div class="placeholder">—</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Last generation</h3>
+      <div id="gen-card"><div class="placeholder">Send a message to see per-token <b>p_max</b> and <b>entropy</b>.</div></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (x, d=2) => (x === null || x === undefined) ? "—" : Number(x).toFixed(d);
+
+let MODEL_INFO = null;
+let lossChart = null, tokenChart = null;
+let busy = false;       // generating
+let ready = false;      // model loaded
+
+// ---- sliders ----
+for (const id of ["max_tokens","temperature","top_p"]) {
+  const el = $(id), out = $(id + "_v");
+  const upd = () => out.textContent = id === "max_tokens" ? el.value : Number(el.value).toFixed(2);
+  el.addEventListener("input", upd); upd();
+}
+
+// ---- status polling ----
+async function poll() {
+  try {
+    const st = await (await fetch("/api/status")).json();
+    renderStatus(st);
+    if (st.status === "ready") {
+      if (!ready || (MODEL_INFO && MODEL_INFO.checkpoint !== st.checkpoint)) {
+        MODEL_INFO = st.model_info; ready = true;
+        renderModel(MODEL_INFO); renderWandb(MODEL_INFO.wandb);
+        enableComposer(true);
+      }
+    } else {
+      ready = false; enableComposer(false);
+    }
+  } catch (e) { /* server restarting */ }
+  setTimeout(poll, ready ? 4000 : 1200);
+}
+
+function renderStatus(st) {
+  const dot = $("status-dot"), txt = $("status-text");
+  const labels = { starting:"starting", streaming:"streaming from Modal", loading:"loading on mps", ready:"ready · mps", error:"error" };
+  txt.textContent = labels[st.status] || st.status;
+  dot.className = "dot " + (st.status === "ready" ? "ready" : st.status === "error" ? "error" : "busy");
+  if (st.status === "error") txt.textContent = "error: " + (st.error || "unknown");
+}
+
+function enableComposer(on) {
+  $("prompt").disabled = !on || busy;
+  $("send").disabled = !on || busy || !$("prompt").value.trim();
+  if (on) $("prompt").placeholder = "The history of the Roman Empire";
+  else $("prompt").placeholder = "model loading…";
+}
+
+// ---- model card ----
+function renderModel(m) {
+  const a = m.arch;
+  const kv = (k, v) => `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  $("model-card").innerHTML =
+    kv("checkpoint", `<span title="${m.checkpoint}">${m.checkpoint_label}</span>`) +
+    kv("parameters", `${(m.num_params/1e6).toFixed(1)}M`) +
+    kv("layers", a.num_layers) +
+    kv("d_model", a.d_model) +
+    kv("heads", `${a.num_heads} <small style="color:var(--muted)">(d_k ${a.d_model/a.num_heads})</small>`) +
+    kv("d_ff", a.d_ff) +
+    kv("vocab", a.vocab_size.toLocaleString()) +
+    kv("context", a.context_length) +
+    kv("device", m.device) +
+    kv("train step", (m.iteration ?? "—").toLocaleString?.() ?? m.iteration);
+
+  // checkpoint selector
+  const sel = $("ckpt-select");
+  if (!sel.dataset.filled && m.checkpoints) {
+    sel.innerHTML = m.checkpoints.map(c => `<option value="${c.file}">${c.label}</option>`).join("");
+    sel.dataset.filled = "1";
+  }
+  sel.value = m.checkpoint;
+}
+
+// ---- wandb card ----
+function renderWandb(w) {
+  const el = $("wandb-card");
+  if (!w || w.error) {
+    el.innerHTML = `<div class="placeholder">W&amp;B unavailable<br><code class="mono">${w ? w.error : ""}</code></div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="grid2">
+      <div class="stat train"><div class="label">best train loss</div><div class="num">${fmt(w.min_train,3)} <small>@${w.min_train_step.toLocaleString()}</small></div></div>
+      <div class="stat val"><div class="label">best val loss</div><div class="num">${fmt(w.min_val,3)} <small>@${w.min_val_step.toLocaleString()}</small></div></div>
+      <div class="stat"><div class="label">final train</div><div class="num">${fmt(w.final_train,3)}</div></div>
+      <div class="stat"><div class="label">final val</div><div class="num">${fmt(w.final_val,3)}</div></div>
+    </div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>train</span><span><i style="background:var(--accent-2)"></i>val</span><span class="grow"></span></div>
+    <div class="chart-box"><canvas id="loss-chart"></canvas></div>
+    <div class="muted-note">${fmt(w.runtime_min,1)} min on one B200 · <a href="${w.run_url}" target="_blank">run ${w.run_name ? "↗" : ""}</a></div>`;
+  drawLossChart(w.curve);
+}
+
+function drawLossChart(c) {
+  if (lossChart) lossChart.destroy();
+  const ctx = $("loss-chart");
+  lossChart = new Chart(ctx, {
+    type: "line",
+    data: { labels: c.steps, datasets: [
+      { label: "train", data: c.train, borderColor: "#6ea8fe", borderWidth: 1.5, pointRadius: 0, tension: .25, spanGaps: true },
+      { label: "val", data: c.val, borderColor: "#f0883e", borderWidth: 1.5, pointRadius: 0, tension: .25, spanGaps: true },
+    ]},
+    options: baseChartOpts({ x: "step", y: "loss (nats)" }),
+  });
+}
+
+// ---- chat ----
+const messagesEl = $("messages");
+function addMessage(role, html) {
+  $("empty")?.remove();
+  const row = document.createElement("div"); row.className = "msg-row";
+  row.innerHTML = `<div class="msg">
+      <div class="avatar ${role === "user" ? "user" : "bot"}">${role === "user" ? "You" : "LM"}</div>
+      <div class="bubble">${html}</div></div>`;
+  messagesEl.appendChild(row);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return row;
+}
+
+async function send() {
+  const promptEl = $("prompt");
+  const prompt = promptEl.value.trim();
+  if (!prompt || busy || !ready) return;
+  busy = true; enableComposer(true);
+  promptEl.value = ""; promptEl.style.height = "auto";
+
+  addMessage("user", escapeHtml(prompt));
+  const botRow = addMessage("bot", `<span class="typing"><span></span><span></span><span></span></span>`);
+  const bubble = botRow.querySelector(".bubble");
+
+  const body = {
+    prompt,
+    max_tokens: +$("max_tokens").value,
+    temperature: +$("temperature").value,
+    top_p: +$("top_p").value,
+  };
+  try {
+    const res = await fetch("/api/generate", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "generation failed");
+    bubble.innerHTML = `<span class="prompt-prefix">${escapeHtml(prompt)}</span>${escapeHtml(data.completion)}`;
+    const meta = document.createElement("div"); meta.className = "msg-meta";
+    meta.innerHTML = `<span>${data.num_tokens} tokens</span>
+       <span>avg p_max <b>${(data.avg_p_max*100).toFixed(1)}%</b></span>
+       <span>avg entropy <b>${fmt(data.avg_entropy,2)}</b> nats</span>`;
+    botRow.querySelector(".msg").after(meta);
+    renderGen(data);
+  } catch (e) {
+    bubble.innerHTML = `<span style="color:#f87171">⚠ ${escapeHtml(e.message)}</span>`;
+  } finally {
+    busy = false; enableComposer(true);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+// ---- per-token generation chart ----
+function renderGen(d) {
+  $("gen-card").innerHTML = `
+    <div class="grid2">
+      <div class="stat"><div class="label">avg p_max</div><div class="num">${(d.avg_p_max*100).toFixed(1)}<small>%</small></div></div>
+      <div class="stat"><div class="label">avg entropy</div><div class="num">${fmt(d.avg_entropy,2)} <small>nats</small></div></div>
+    </div>
+    <div class="legend"><span><i style="background:var(--green)"></i>p_max</span><span><i style="background:var(--accent-2)"></i>entropy</span></div>
+    <div class="chart-box"><canvas id="token-chart"></canvas></div>
+    <div class="muted-note">Per generated token. Low entropy / high p_max = the model is confident.</div>`;
+  const labels = d.p_maxes.map((_, i) => i + 1);
+  if (tokenChart) tokenChart.destroy();
+  tokenChart = new Chart($("token-chart"), {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "p_max", data: d.p_maxes, yAxisID: "y", borderColor: "#4ade80", backgroundColor: "rgba(74,222,128,.08)", borderWidth: 1.5, pointRadius: 0, fill: true, tension: .2 },
+      { label: "entropy", data: d.entropies, yAxisID: "y1", borderColor: "#f0883e", borderWidth: 1.5, pointRadius: 0, tension: .2 },
+    ]},
+    options: {
+      ...baseChartOpts({ x: "token #" }),
+      scales: {
+        x: axisX("token #"),
+        y:  { position:"left",  min:0, max:1, ...axisStyle(), title:{display:true,text:"p_max",color:"#4ade80"} },
+        y1: { position:"right", min:0, grid:{drawOnChartArea:false}, ...axisStyle(), title:{display:true,text:"entropy",color:"#f0883e"} },
+      }
+    },
+  });
+}
+
+// ---- chart helpers ----
+function axisStyle(){ return { ticks:{color:"#8b93a7",font:{size:10}}, grid:{color:"rgba(255,255,255,.05)"} }; }
+function axisX(t){ return { ...axisStyle(), title:{display:true,text:t,color:"#8b93a7",font:{size:10}}, ticks:{color:"#8b93a7",font:{size:10},maxTicksLimit:8} }; }
+function baseChartOpts({x,y}) {
+  return {
+    responsive:true, maintainAspectRatio:false, animation:false,
+    interaction:{intersect:false,mode:"index"},
+    plugins:{ legend:{display:false}, tooltip:{callbacks:{}} },
+    scales:{ x: axisX(x||""), y:{ ...axisStyle(), title: y?{display:true,text:y,color:"#8b93a7",font:{size:10}}:{display:false} } },
+  };
+}
+
+// ---- misc ----
+function escapeHtml(s){ return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+const promptEl = $("prompt");
+promptEl.addEventListener("input", () => {
+  promptEl.style.height = "auto"; promptEl.style.height = Math.min(promptEl.scrollHeight, 200) + "px";
+  $("send").disabled = busy || !ready || !promptEl.value.trim();
+});
+promptEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("send").addEventListener("click", send);
+
+$("ckpt-select").addEventListener("change", async (e) => {
+  const file = e.target.value;
+  ready = false; enableComposer(false);
+  $("model-card").innerHTML = `<div class="placeholder">streaming ${file.includes("early")?"untrained":file.includes("frac10")?"10%":"final"} checkpoint…</div>`;
+  await fetch("/api/load", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({checkpoint:file}) });
+});
+
+// example prompts
+const EXAMPLES = [
+  "The history of the Roman Empire",
+  "In a stunning breakthrough, researchers announced",
+  "Once upon a time, in a small village",
+  "The best way to learn machine learning is",
+];
+$("chips").innerHTML = EXAMPLES.map(e => `<div class="chip">${e}</div>`).join("");
+$("chips").addEventListener("click", (e) => {
+  if (!e.target.classList.contains("chip")) return;
+  promptEl.value = e.target.textContent;
+  promptEl.dispatchEvent(new Event("input"));
+  if (ready) send();
+});
+
+poll();
+</script>
+</body>
+</html>
