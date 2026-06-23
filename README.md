@@ -29,3 +29,48 @@ TRAIN_DATA=/path/to/train.uint16 VALID_DATA=/path/to/valid.uint16 uv run main.py
 ```
 
 This repo also includes the original Modal training entrypoint in `cs336_basics/train_model.py`.
+
+## Inference
+
+Generate text from a trained checkpoint with `cs336_basics/inference.py`. Checkpoints
+are not stored in the repo — they are streamed on demand from the Modal volume
+`cs336-model-checkpoints` straight into memory (each is ~767 MB), so nothing heavy
+lands on disk. This needs Modal auth (`uv run modal token new` once).
+
+Run with the default final checkpoint:
+
+```bash
+uv run cs336_basics/inference.py --prompt "The history of the Roman Empire"
+```
+
+Pick a different checkpoint from the volume and tune sampling:
+
+```bash
+uv run cs336_basics/inference.py \
+  B200_owt_32k_45min_deep6_clip0p5_ckpts_1782191080.0134425_step1480_frac10.pt \
+  --prompt "Once upon a time" \
+  --max-tokens 256 --temperature 0.7 --top-p 0.9
+```
+
+List the available checkpoints on the volume:
+
+```bash
+uv run modal volume ls cs336-model-checkpoints
+```
+
+The script prints the generated text plus the average entropy and average max
+probability (`p_max`) across the generated tokens. Useful flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `checkpoint` (positional) | final run | Filename on the volume, or a local `.pt` path |
+| `--volume` | `cs336-model-checkpoints` | Modal volume holding the checkpoints |
+| `--prompt` | `"Just testing"` | Prompt to complete |
+| `--max-tokens` | `256` | Max tokens to generate |
+| `--temperature` | `0.7` | Softmax temperature |
+| `--top-p` | `0.9` | Nucleus (top-p) threshold |
+| `--max-seq-len` | `512` | Context window fed to the model each step |
+| `--debug` | off | Print each token with its entropy / p_max |
+
+Generation runs on Apple Silicon (`mps`). If you pass a path to a local file
+instead of a volume filename, it loads from disk directly.
