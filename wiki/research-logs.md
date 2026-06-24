@@ -5,6 +5,76 @@ model. Newest entries on top.
 
 ---
 
+## 2026-06-23 — Scaling check: are we trained optimally? (+ cost / storage)
+
+Question: the final checkpoint trained for 45 min — (1) did we use all the
+training data, and (2) if we keep training, what loss do we get?
+
+### (1) Did we use all the data? No — ~a third of it.
+From the OWT manifest (`cs336-owt-artifacts` volume):
+- **train.uint16 = 5,526,394,772 bytes / 2 (uint16) = 2.76B tokens** available
+- valid = 67.3M tokens
+
+The run processed **1.088B tokens** (16,612 steps × 128 batch × 512 ctx):
+- 1.088B / 2.76B = **39% of one epoch**
+- `data_loading` samples random windows *with replacement* → expected unique
+  coverage `1 - e^(-0.39) ≈ 33%`. The model never saw ~two-thirds of the corpus.
+- We are **data-rich, not data-bound**. A full epoch ≈ 104 min on B200
+  (2.76B / ~440k tok/s) ≈ 1.7 B200-hr ≈ ~$11.
+
+### (2) Scaling law fit (from W&B run `lessandro/cs336/v5quc8v4`)
+Pulled the 333 validation points and fit the Chinchilla data term
+`L(D) = E + B·D^(-beta)` over D > 1e7:
+
+**L(D) = 3.123 + 12020·D^(-0.516)**, RMSE 0.024 (tracks the curve almost exactly).
+Plot: `wiki/assets/loss_curve.png`.
+
+| Tokens D | Predicted val loss | PPL |
+| --- | --- | --- |
+| 1.09B (run end) | 3.39 (measured 3.42) | ~29 |
+| 2.76B (1 full epoch) | 3.29 | 26.7 |
+| 5.5B (2 epochs) | 3.24 | 25.4 |
+| 11B (4 epochs) | 3.20 | 24.6 |
+| asymptote (D→∞) | 3.12 | 22.7 |
+
+So finishing the epoch buys ~3.42 → 3.29 (**~0.13 nats**) — real but modest. The
+curve has clearly bent into its flat regime past ~3e8 tokens.
+
+### Big caveat: the fit is confounded by the LR schedule
+β = 0.52 is ~2× Chinchilla's 0.28. The cosine LR decay (to min at ~0.66B tokens,
+`lr_decay_steps=10000`) does much of the loss-dropping, so the single-run fit
+absorbs the *schedule*, not just data scaling. Therefore:
+- The asymptote E = 3.12 is **this schedule's floor**, not the true irreducible
+  loss (note it sits barely below the final 3.42 — the tail flattened because LR
+  hit min, not because data ran out).
+- The extrapolation is **pessimistic for training longer *properly***: a fresh run
+  with a schedule annealed to 2.76B tokens would likely beat 3.29. A single
+  annealed trajectory underestimates a longer dedicated run.
+- A trustworthy scaling law needs the real Chinchilla method: several short runs
+  each annealed to their own token budget, fit the law to their **endpoints**.
+
+### Cost reference
+- **B200 = $6.25/hr** ($0.001736/sec). A 45-min run ≈ **$4.69**. Full epoch ≈ $11.
+- **Modal volume storage = $0.09/GiB/mo, first 1 TiB/mo free.** Currently using
+  108.2 GiB total across 6 volumes → **$0** (11% of free tier). cs336 volumes:
+  owt-artifacts 27.8 GiB, model-checkpoints 19.0 GiB.
+
+### Decision
+The model is **trained pretty optimally for its size** (67M params, D/N ≈ 16, just
+under Chinchilla-optimal 20). It is **param-bound, not data-bound** — the lever
+for lower loss is a bigger model (scale N and D together), not more tokens into
+this one.
+
+Not worth training more right now: to justify it we'd first need to know exactly
+**what loss target we want and why**, **how much it costs**, and **how to do it**
+(proper longer schedule, not resume-from-min-LR). Parking that.
+
+**Next priority: SFT** (on `tatsu-lab/alpaca`) so we can actually *talk to it* and
+get a qualitative feel for the model — more valuable right now than squeezing
+~0.1 nats out of pretraining.
+
+---
+
 ## 2026-06-23 — From base LM to instruction following: why it rambles, and the SFT path
 
 ### The observation
