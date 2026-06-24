@@ -101,6 +101,15 @@ The right-hand panel shows:
 - **Last generation** — average `p_max` / `entropy` plus a per-token chart of both
   (watch confidence rise as the model commits to a continuation).
 
+Every token in the reply is tinted by the probability the model assigned to it
+(red = surprising → green = confident); hover any token to see its entropy and the
+top next-token candidates with their probabilities. This is read off the verbatim
+`generate()` run via a forward hook on the model (logits) and a wrapper around the
+tokenizer (the exact emitted ids) — no decoding code is duplicated or changed.
+
+Deep-link a prompt to auto-run it once the model is ready:
+`http://127.0.0.1:8000/?q=The+history+of+Rome`.
+
 The checkpoint dropdown in the header switches between the final, 10%, and
 untrained snapshots of the run (each streamed on demand) — a quick way to *see*
 the entropy collapse from ~10.3 nats (untrained, uniform over 32k vocab) to ~2

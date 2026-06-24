@@ -55,7 +55,16 @@ def generate(
     debug=False,
     temperature=0.5,
     p_threshold=0.3,
-    max_sequence_length=512):
+    max_sequence_length=512,
+    sft=None):
+
+    if sft == "alpaca":
+        prompt = (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            f"### Instruction:\n{prompt}\n\n### Response:\n"
+        )
+
 
     EOT_ID = tokenizer.encode("<|endoftext|>")[0]
     index = 0
@@ -192,6 +201,12 @@ def main():
     if args.debug:
         print("--- per-token ---")
 
+    # Instruction-tuned checkpoints (filename contains "alpaca") get the prompt
+    # wrapped in their SFT template by generate(sft="alpaca").
+    sft = "alpaca" if "alpaca" in str(args.checkpoint).lower() else None
+    if sft:
+        print(f"sft template : {sft}")
+
     text, entropies, p_maxes = generate(
         prompt=args.prompt,
         max_tokens=args.max_tokens,
@@ -199,6 +214,7 @@ def main():
         temperature=args.temperature,
         p_threshold=args.top_p,
         max_sequence_length=args.max_seq_len,
+        sft=sft,
     )
 
     avg_entropy = sum(entropies) / len(entropies) if entropies else 0.0

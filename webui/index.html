@@ -70,6 +70,32 @@
   .avatar.bot { background: #243; color: var(--green); }
   .bubble { white-space: pre-wrap; word-wrap: break-word; padding-top: 3px; }
   .bubble .prompt-prefix { color: var(--muted); }
+
+  /* per-token confidence heatmap */
+  .tok { border-radius: 3px; transition: filter .1s, box-shadow .1s; cursor: default; }
+  .tok:hover { filter: brightness(1.55); box-shadow: 0 0 0 1px rgba(255,255,255,.25); }
+  .heat-hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  /* floating hover card */
+  #tok-tip {
+    position: fixed; z-index: 50; pointer-events: none; opacity: 0;
+    transform: translateY(4px); transition: opacity .09s, transform .09s;
+    width: 232px; background: #0c0f16; border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.55);
+  }
+  #tok-tip.show { opacity: 1; transform: translateY(0); }
+  #tok-tip .tip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+  #tok-tip .tip-tok { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 700; color: var(--text); word-break: break-all; }
+  #tok-tip .tip-p { font-size: 13px; font-weight: 700; color: var(--green); font-variant-numeric: tabular-nums; }
+  #tok-tip .tip-ent { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  #tok-tip .tip-row { display: grid; grid-template-columns: 78px 1fr 38px; align-items: center; gap: 7px; margin: 3px 0; }
+  #tok-tip .tip-row.is-chosen .tip-name { color: var(--green); font-weight: 700; }
+  #tok-tip .tip-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #tok-tip .tip-bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.07); overflow: hidden; }
+  #tok-tip .tip-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  #tok-tip .tip-row.is-chosen .tip-bar > i { background: var(--green); }
+  #tok-tip .tip-val { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  #tok-tip .tip-sub { font-size: 10px; color: var(--muted); margin: 7px 0 1px; text-transform: uppercase; letter-spacing: .5px; }
   .msg-meta { max-width: 760px; margin: 4px auto 0; padding-left: 42px; font-size: 11.5px; color: var(--muted); display: flex; gap: 14px; }
   .msg-meta b { color: var(--text); font-weight: 600; }
   .empty {
@@ -187,6 +213,8 @@
   </aside>
 </main>
 
+<div id="tok-tip"></div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const fmt = (x, d=2) => (x === null || x === undefined) ? "—" : Number(x).toFixed(d);
@@ -195,6 +223,10 @@ let MODEL_INFO = null;
 let lossChart = null, tokenChart = null;
 let busy = false;       // generating
 let ready = false;      // model loaded
+
+// optional deep-link: /?q=The+history+of+Rome  auto-sends once the model is ready
+const PARAMS = new URLSearchParams(location.search);
+let pendingPrompt = PARAMS.get("q");
 
 // ---- sliders ----
 for (const id of ["max_tokens","temperature","top_p"]) {
@@ -213,6 +245,10 @@ async function poll() {
         MODEL_INFO = st.model_info; ready = true;
         renderModel(MODEL_INFO); renderWandb(MODEL_INFO.wandb);
         enableComposer(true);
+        if (pendingPrompt) {
+          const p = pendingPrompt; pendingPrompt = null;
+          promptEl.value = p; promptEl.dispatchEvent(new Event("input")); send();
+        }
       }
     } else {
       ready = false; enableComposer(false);
@@ -232,8 +268,43 @@ function renderStatus(st) {
 function enableComposer(on) {
   $("prompt").disabled = !on || busy;
   $("send").disabled = !on || busy || !$("prompt").value.trim();
-  if (on) $("prompt").placeholder = "The history of the Roman Empire";
+  if (on) $("prompt").placeholder = MODE_PRESETS[MODE].examples[0];
   else $("prompt").placeholder = "model loading…";
+}
+
+// ---- model "mode": base completion vs Alpaca instruction-tuned ----
+let MODE = "base";
+const MODE_PRESETS = {
+  base: {
+    title: "Talk to a base language model",
+    sub: "A 6-layer Transformer trained from scratch on OpenWebText. It's a <b>base completion model</b> — type the start of something and it continues it.",
+    examples: [
+      "The history of the Roman Empire",
+      "In a stunning breakthrough, researchers announced",
+      "Once upon a time, in a small village",
+      "The best way to learn machine learning is",
+    ],
+  },
+  alpaca: {
+    title: "Ask the instruction-tuned model",
+    sub: "The base model fine-tuned on <b>Alpaca</b>. Give it an instruction — your message is wrapped in the Alpaca prompt template before generation, and the reply is what comes after <code class='mono'>### Response:</code>.",
+    examples: [
+      "Give three tips for staying healthy.",
+      "Explain what a neural network is in simple terms.",
+      "Write a short poem about the ocean.",
+      "List five creative uses for a paperclip.",
+    ],
+  },
+};
+function applyMode(mode) {
+  MODE = MODE_PRESETS[mode] ? mode : "base";
+  const p = MODE_PRESETS[MODE];
+  const empty = $("empty");
+  if (empty) {
+    empty.innerHTML = `<h2>${p.title}</h2><div>${p.sub}</div>
+      <div class="chips" id="chips">${p.examples.map(e => `<div class="chip">${escapeHtml(e)}</div>`).join("")}</div>`;
+  }
+  if (ready && !busy) $("prompt").placeholder = p.examples[0];
 }
 
 // ---- model card ----
@@ -242,6 +313,7 @@ function renderModel(m) {
   const kv = (k, v) => `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   $("model-card").innerHTML =
     kv("checkpoint", `<span title="${m.checkpoint}">${m.checkpoint_label}</span>`) +
+    kv("mode", m.mode === "alpaca" ? "instruction · Alpaca" : "base completion") +
     kv("parameters", `${(m.num_params/1e6).toFixed(1)}M`) +
     kv("layers", a.num_layers) +
     kv("d_model", a.d_model) +
@@ -259,6 +331,8 @@ function renderModel(m) {
     sel.dataset.filled = "1";
   }
   sel.value = m.checkpoint;
+
+  applyMode(m.mode);  // swap empty-state copy + example chips for base vs Alpaca
 }
 
 // ---- wandb card ----
@@ -328,11 +402,13 @@ async function send() {
     const res = await fetch("/api/generate", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "generation failed");
-    bubble.innerHTML = `<span class="prompt-prefix">${escapeHtml(prompt)}</span>${escapeHtml(data.completion)}`;
+    // show only the model's output (the prompt is already in the "You" bubble)
+    bubble.innerHTML = renderHeatmap(data.tokens);
     const meta = document.createElement("div"); meta.className = "msg-meta";
     meta.innerHTML = `<span>${data.num_tokens} tokens</span>
        <span>avg p_max <b>${(data.avg_p_max*100).toFixed(1)}%</b></span>
-       <span>avg entropy <b>${fmt(data.avg_entropy,2)}</b> nats</span>`;
+       <span>avg entropy <b>${fmt(data.avg_entropy,2)}</b> nats</span>
+       <span class="heat-hint">hover a token for alternatives →</span>`;
     botRow.querySelector(".msg").after(meta);
     renderGen(data);
   } catch (e) {
@@ -352,7 +428,12 @@ function renderGen(d) {
     </div>
     <div class="legend"><span><i style="background:var(--green)"></i>p_max</span><span><i style="background:var(--accent-2)"></i>entropy</span></div>
     <div class="chart-box"><canvas id="token-chart"></canvas></div>
-    <div class="muted-note">Per generated token. Low entropy / high p_max = the model is confident.</div>`;
+    <div class="muted-note" style="display:flex;align-items:center;gap:8px;margin-top:10px">
+      <span>token tint = P(token):</span>
+      <span style="flex:1;height:8px;border-radius:4px;background:linear-gradient(90deg,hsla(0,80%,50%,.34),hsla(60,80%,50%,.34),hsla(120,80%,50%,.34))"></span>
+      <span>surprising → confident</span>
+    </div>
+    <div class="muted-note">Hover any token in the reply for its entropy and top alternatives.</div>`;
   const labels = d.p_maxes.map((_, i) => i + 1);
   if (tokenChart) tokenChart.destroy();
   tokenChart = new Chart($("token-chart"), {
@@ -384,6 +465,55 @@ function baseChartOpts({x,y}) {
   };
 }
 
+// ---- per-token heatmap + hover card ----
+let TOK_UID = 0;
+const TOKEN_STORE = {};
+
+function probColor(p) {
+  p = Math.max(0, Math.min(1, p));
+  const hue = p * 120;                  // 0 = red (surprising) … 120 = green (confident)
+  const alpha = 0.12 + 0.22 * p;        // more confident → more visible tint
+  return `hsla(${hue.toFixed(0)}, 80%, 50%, ${alpha.toFixed(3)})`;
+}
+function visToken(s) {                   // make whitespace visible in the card
+  return escapeHtml(s).replace(/\n/g, "⏎").replace(/ /g, "·") || "∅";
+}
+function renderHeatmap(tokens) {
+  if (!tokens || !tokens.length) return "";
+  const uid = ++TOK_UID; TOKEN_STORE[uid] = tokens;
+  return tokens.map((t, i) =>
+    `<span class="tok" data-uid="${uid}" data-i="${i}" style="background:${probColor(t.prob)}">${escapeHtml(t.text)}</span>`
+  ).join("");
+}
+
+const tip = $("tok-tip");
+messagesEl.addEventListener("mouseover", (e) => {
+  const el = e.target.closest(".tok"); if (!el) return;
+  const toks = TOKEN_STORE[el.dataset.uid]; if (!toks) return;
+  showTip(el, toks[+el.dataset.i]);
+});
+messagesEl.addEventListener("mouseout", (e) => { if (e.target.closest(".tok")) tip.classList.remove("show"); });
+
+function showTip(el, t) {
+  const max = Math.max(t.prob, ...t.alts.map(a => a.prob), 1e-6);
+  const rows = t.alts.map(a => {
+    const chosen = a.text === t.text;
+    return `<div class="tip-row ${chosen ? "is-chosen" : ""}">
+      <span class="tip-name">${visToken(a.text)}</span>
+      <span class="tip-bar"><i style="width:${(a.prob / max * 100).toFixed(1)}%"></i></span>
+      <span class="tip-val">${(a.prob * 100).toFixed(1)}%</span></div>`;
+  }).join("");
+  tip.innerHTML =
+    `<div class="tip-head"><span class="tip-tok">${visToken(t.text)}</span><span class="tip-p">${(t.prob * 100).toFixed(1)}%</span></div>
+     <div class="tip-ent">entropy ${t.entropy == null ? "—" : t.entropy.toFixed(2)} nats · p_max ${(t.pmax * 100).toFixed(1)}%</div>
+     <div class="tip-sub">top ${t.alts.length} next-token candidates</div>${rows}`;
+  tip.classList.add("show");
+  const r = el.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+  let left = Math.max(8, Math.min(r.left + r.width / 2 - tw / 2, window.innerWidth - tw - 8));
+  let top = r.top - th - 8; if (top < 8) top = r.bottom + 8;
+  tip.style.left = left + "px"; tip.style.top = top + "px";
+}
+
 // ---- misc ----
 function escapeHtml(s){ return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
@@ -400,24 +530,19 @@ $("send").addEventListener("click", send);
 $("ckpt-select").addEventListener("change", async (e) => {
   const file = e.target.value;
   ready = false; enableComposer(false);
-  $("model-card").innerHTML = `<div class="placeholder">streaming ${file.includes("early")?"untrained":file.includes("frac10")?"10%":"final"} checkpoint…</div>`;
+  $("model-card").innerHTML = `<div class="placeholder">streaming checkpoint…</div>`;
   await fetch("/api/load", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({checkpoint:file}) });
 });
 
-// example prompts
-const EXAMPLES = [
-  "The history of the Roman Empire",
-  "In a stunning breakthrough, researchers announced",
-  "Once upon a time, in a small village",
-  "The best way to learn machine learning is",
-];
-$("chips").innerHTML = EXAMPLES.map(e => `<div class="chip">${e}</div>`).join("");
-$("chips").addEventListener("click", (e) => {
-  if (!e.target.classList.contains("chip")) return;
-  promptEl.value = e.target.textContent;
+// example-prompt chips (delegated so applyMode() can rebuild #chips freely)
+messagesEl.addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  promptEl.value = chip.textContent;
   promptEl.dispatchEvent(new Event("input"));
   if (ready) send();
 });
+applyMode(MODE);  // initial empty-state copy + chips (before model loads)
 
 poll();
 </script>

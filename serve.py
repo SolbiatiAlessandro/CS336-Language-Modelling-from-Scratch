@@ -37,28 +37,38 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import torch
+
 REPO_DIR = Path(__file__).resolve().parent
 WEBUI_DIR = REPO_DIR / "webui"
+
+TOPK = 6  # alternative tokens surfaced per step in the hover card
 
 MODAL_VOLUME = "cs336-model-checkpoints"
 WANDB_RUN = "lessandro/cs336/zzd4j6h7"  # leaderboard run from README.md
 
-# Checkpoints from the final leaderboard run, at three points in training.
-# (Same architecture; nice for watching the model "wake up" across steps.)
+# Selectable checkpoints (all deep6, same architecture as final_config.json).
+# Files whose name contains "alpaca" are the instruction-tuned SFT run — the UI
+# and CLI wrap the prompt in the Alpaca template for those (see run_generation).
 CHECKPOINTS = [
     {
+        "file": "sft_alpaca_deep6_1782286413.7466567_step2399_final.pt",
+        "label": "SFT Alpaca · step 2,399",
+        "step": 2399,
+    },
+    {
         "file": "B200_owt_32k_45min_deep6_clip0p5_ckpts_1782191080.0134425_step16612_final.pt",
-        "label": "Final · step 16,612",
+        "label": "Base · step 16,612",
         "step": 16612,
     },
     {
         "file": "B200_owt_32k_45min_deep6_clip0p5_ckpts_1782191080.0134425_step1480_frac10.pt",
-        "label": "10% · step 1,480",
+        "label": "Base 10% · step 1,480",
         "step": 1480,
     },
     {
         "file": "B200_owt_32k_45min_deep6_clip0p5_ckpts_1782191080.0134425_step5_early.pt",
-        "label": "Untrained · step 5",
+        "label": "Base untrained · step 5",
         "step": 5,
     },
 ]
@@ -170,6 +180,7 @@ def load_into_inference(file_name):
     model_info = {
         "checkpoint": file_name,
         "checkpoint_label": meta["label"] if meta else file_name,
+        "mode": "alpaca" if "alpaca" in file_name.lower() else "base",
         "device": DEVICE,
         "iteration": iteration,
         "num_params": int(net.num_params),
@@ -210,30 +221,102 @@ def start_load(file_name):
 
 
 # ---------------------------------------------------------------------------
-# Inference: call the verbatim generate(), strip the prompt prefix.
+# Inference: run the verbatim generate() while *observing* it (no edits to the
+# decoding code), so we can colour each emitted token by its probability and
+# surface the top alternatives + entropy on hover.
+#
+#   * a forward hook on the model records the last-position logits at every step
+#   * a thin wrapper around tokenizer.decode() captures the exact token ids
+#     (generate()'s final line decodes the full prompt+generated list)
+# From those we recompute softmax(logits / temperature) — the same distribution
+# generate() uses — to read off the chosen-token probability and the top-k.
 # ---------------------------------------------------------------------------
+def _per_token_details(generated_ids, logits_steps, entropies, temperature, decode):
+    """Build the per-token display payload from the captured logits."""
+    out = []
+    n = min(len(generated_ids), len(logits_steps))
+    for i in range(n):
+        logits = logits_steps[i].float()
+        probs = torch.softmax(logits / float(temperature), dim=-1)
+        chosen = int(generated_ids[i])
+        topv, topi = probs.topk(min(TOPK, probs.numel()))
+        alts = [{"text": decode([int(t)]), "prob": float(v)} for v, t in zip(topv.tolist(), topi.tolist())]
+        out.append({
+            "text": decode([chosen]),
+            "prob": float(probs[chosen]),          # P(emitted token) — drives the heat tint
+            "pmax": float(probs.max()),
+            "entropy": float(entropies[i]) if i < len(entropies) else None,
+            "alts": alts,
+        })
+    return out
+
+
 def run_generation(prompt, max_tokens, temperature, top_p, max_seq_len):
+    logits_steps = []
+    captured = {"ids": None}
+    tok = inference.tokenizer
+
+    def hook(_module, _inputs, output):
+        # output: [batch, seq, vocab] — keep the next-token logits, on CPU.
+        logits_steps.append(output[0, -1].detach().to("cpu"))
+
+    orig_decode = tok.decode
+
+    def decode_spy(ids):
+        # generate() decodes single tokens only when debug=True (off here); the
+        # one multi-token decode is the final `decode(tokens)` — the full list.
+        if isinstance(ids, (list, tuple)) and (captured["ids"] is None or len(ids) > len(captured["ids"])):
+            captured["ids"] = list(ids)
+        return orig_decode(ids)
+
+    # Instruction-tuned checkpoints (e.g. the Alpaca SFT run) get the chat input
+    # wrapped in their training template; generate() does the wrapping when
+    # sft="alpaca". We key off the loaded checkpoint's filename.
+    sft = "alpaca" if "alpaca" in _get_state()["checkpoint"].lower() else None
+
     with _gen_lock:
         if _get_state()["status"] != "ready":
             raise RuntimeError("model not ready")
-        full_text, entropies, p_maxes = inference.generate(
-            prompt=prompt,
-            max_tokens=int(max_tokens),
-            debug=False,
-            temperature=float(temperature),
-            p_threshold=float(top_p),
-            max_sequence_length=int(max_seq_len),
-        )
-    # generate() returns decode(prompt_tokens + new_tokens); for byte-level BPE
-    # decode is concatenative, so the decoded prompt is an exact prefix.
-    prompt_decoded = inference.tokenizer.decode(inference.tokenizer.encode(prompt))
-    completion = full_text[len(prompt_decoded):]
+        handle = inference.model.register_forward_hook(hook)
+        tok.decode = decode_spy
+        try:
+            full_text, entropies, p_maxes = inference.generate(
+                prompt=prompt,
+                max_tokens=int(max_tokens),
+                debug=False,
+                temperature=float(temperature),
+                p_threshold=float(top_p),
+                max_sequence_length=int(max_seq_len),
+                sft=sft,
+            )
+        finally:
+            handle.remove()
+            tok.decode = orig_decode
+
+        # The generated tokens are exactly the last N appended (N = forward
+        # passes), so slice from the end. This is independent of any prompt
+        # templating generate() applied internally (sft="alpaca").
+        n_gen = len(logits_steps)
+        full_ids = captured["ids"] or []
+        generated_ids = full_ids[len(full_ids) - n_gen:] if n_gen else []
+
+        # Drop a trailing <|endoftext|> stop token so it isn't shown or counted.
+        eot_id = tok.encode("<|endoftext|>")[0]
+        if generated_ids and generated_ids[-1] == eot_id:
+            generated_ids = generated_ids[:-1]
+            logits_steps = logits_steps[:-1]
+            entropies = entropies[:-1]
+            p_maxes = p_maxes[:-1]
+
+        tokens = _per_token_details(generated_ids, logits_steps, entropies, temperature, orig_decode)
+
+    completion = "".join(t["text"] for t in tokens)
     avg_entropy = sum(entropies) / len(entropies) if entropies else 0.0
     avg_p_max = sum(p_maxes) / len(p_maxes) if p_maxes else 0.0
     return {
         "prompt": prompt,
         "completion": completion,
-        "full_text": full_text,
+        "tokens": tokens,           # per-token: text, prob, pmax, entropy, alts[]
         "entropies": entropies,
         "p_maxes": p_maxes,
         "avg_entropy": avg_entropy,
@@ -270,12 +353,13 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b"{}")
 
     def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
+        path = self.path.split("?", 1)[0]  # ignore query string (e.g. /?q=…)
+        if path == "/" or path == "/index.html":
             html = (WEBUI_DIR / "index.html").read_text()
             return self._send(200, html, "text/html; charset=utf-8")
-        if self.path == "/api/status":
+        if path == "/api/status":
             return self._send(200, _get_state())
-        if self.path == "/api/model-info":
+        if path == "/api/model-info":
             st = _get_state()
             if st["status"] != "ready":
                 return self._send(409, {"error": "not ready", "status": st["status"]})

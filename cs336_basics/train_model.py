@@ -58,6 +58,7 @@ REMOTE_PROJECT_DIR = Path("/root/cs336_basics")
 MODAL_CHECKPOINT_DIR = REMOTE_PROJECT_DIR / "model_checkpoints"
 checkpoint_volume = modal.Volume.from_name("cs336-model-checkpoints", create_if_missing=True)
 owt_artifact_volume = modal.Volume.from_name("cs336-owt-artifacts", create_if_missing=True)
+sft_data_volume = modal.Volume.from_name("cs336-sft-data", create_if_missing=True)
 gpu_image = (
     modal.Image.debian_slim(python_version="3.12")
     .uv_pip_install("numpy", "tensorboard", "torch", "triton", "wandb")
@@ -84,6 +85,7 @@ gpu_image = (
     volumes={
         str(MODAL_CHECKPOINT_DIR): checkpoint_volume,
         "/root/owt_artifacts": owt_artifact_volume,
+        "/root/sft_data": sft_data_volume,
     },
 )
 def train(arguments):
@@ -113,19 +115,37 @@ def train(arguments):
    project_dir = Path(arguments['project_dir'])
    checkpoint_dir = project_dir / arguments["checkpoint_dir"]
    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-   train_tokens = np.memmap(
-      project_dir / arguments['train_data'],
-      dtype=np.uint16,
-      mode="r",
-    )
-   validation_tokens = np.memmap(
-      project_dir / arguments['validation_data'],
-      dtype=np.uint16,
-      mode="r",
-    )
+   SFT = bool(arguments.get("sft", False))
+   if not SFT:
+       train_tokens = np.memmap(
+          project_dir / arguments['train_data'],
+          dtype=np.uint16,
+          mode="r",
+        )
+       validation_tokens = np.memmap(
+          project_dir / arguments['validation_data'],
+          dtype=np.uint16,
+          mode="r",
+        )
+   else:
+       sft_dir = Path("/root/sft_data") / arguments.get("sft_subdir", "alpaca_vocab32000")
+       input_ids = np.fromfile(sft_dir / "input_ids.uint16", dtype=np.uint16)
+       offsets = np.load(sft_dir / "offsets.npy")
+       prompt_lens = np.load(sft_dir / "prompt_lens.npy")
+       # Hold out the last `sft_val_examples` examples for validation.
+       num_examples = offsets.shape[0] - 1
+       sft_val_examples = arguments.get("sft_val_examples", 1000)
+       sft_train_hi = num_examples - sft_val_examples
+       print(f"SFT data: {num_examples} examples -> {sft_train_hi} train / {sft_val_examples} val")
+
+   if SFT and arguments.get("init_checkpoint"):
+       init_path = checkpoint_dir / arguments["init_checkpoint"]
+       obj = torch.load(init_path, map_location=arguments['device'])
+       transformer.load_state_dict(obj['model'])
+       print(f"SFT: loaded base weights from {init_path} (iteration {obj.get('iteration')})")
 
    optimizer = model.AdamW(
-           transformer.parameters(), 
+           transformer.parameters(),
            arguments['learning_rate'],
            arguments['betas'],
            1e-6,
@@ -145,15 +165,29 @@ def train(arguments):
        if step % tokens_per_seconds_measure_every == 0:
            torch.cuda.synchronize()
            start = time.perf_counter()
-       x, y_label = data.data_loading(
-               train_tokens, 
-               arguments['batch_size'], 
-               arguments['context_length'],
-               arguments['device'])
-       total_tokens += x.numel()
+       if not SFT:
+           x, y_label = data.data_loading(
+                   train_tokens, 
+                   arguments['batch_size'], 
+                   arguments['context_length'],
+                   arguments['device'])
+       else:
+           x, y_label, loss_mask = data.data_loading_with_masking(
+                   input_ids,
+                   offsets,
+                   prompt_lens,
+                   arguments['batch_size'],
+                   arguments['context_length'],
+                   arguments['device'],
+                   index_hi=sft_train_hi)
        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
            z = transformer(x)
+           if SFT:
+               z = z[loss_mask]
+               y_label = y_label[loss_mask]
            loss = model.cross_entropy(z, y_label)
+
+       total_tokens += x.numel()
        loss.backward()
 
        if "gradient_clip_norm" in arguments:
@@ -185,14 +219,30 @@ def train(arguments):
            with torch.no_grad():
                validation_losses = []
                for _ in range(arguments["num_validation_batches"]):
-                   x, y_label = data.data_loading(
-                           validation_tokens, 
-                           arguments['batch_size'], 
-                           arguments['context_length'],
-                           arguments['device'])
-                   with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                       z = transformer(x)
-                       loss = model.cross_entropy(z, y_label)
+                   if not SFT:
+                       x, y_label = data.data_loading(
+                               validation_tokens,
+                               arguments['batch_size'],
+                               arguments['context_length'],
+                               arguments['device'])
+                       with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                           z = transformer(x)
+                           loss = model.cross_entropy(z, y_label)
+                   else:
+                       x, y_label, loss_mask = data.data_loading_with_masking(
+                               input_ids,
+                               offsets,
+                               prompt_lens,
+                               arguments['batch_size'],
+                               arguments['context_length'],
+                               arguments['device'],
+                               index_lo=sft_train_hi,
+                               index_hi=num_examples - 1)
+                       with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                           z = transformer(x)
+                           z = z[loss_mask]
+                           y_label = y_label[loss_mask]
+                           loss = model.cross_entropy(z, y_label)
                    validation_losses.append(loss.detach())
                validation_loss = torch.stack(validation_losses).mean()
                print("validation loss: ", step, validation_loss.detach())
@@ -210,6 +260,11 @@ def train(arguments):
                    step,
                    out)
            checkpoint_volume.commit()
+
+   final_out = checkpoint_dir / f"{run_name}_step{step}_final.pt"
+   print(f"saving final model to checkpoint {final_out}")
+   model.save_checkpoint(transformer, optimizer, step, final_out)
+   checkpoint_volume.commit()
 
    if arguments.get("logging_infra") == "wandb":
        wandb.finish()

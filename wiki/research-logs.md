@@ -5,6 +5,67 @@ model. Newest entries on top.
 
 ---
 
+## 2026-06-24 — SFT on Alpaca: base rambler → instruction-follower
+
+Fine-tuned the pretrained 67M base checkpoint on `tatsu-lab/alpaca` (tokenized with
+our 32k BPE, response-only loss mask). **It works — the model now follows
+instructions and stops.**
+
+### Setup
+- Config: `training_configs/sft_alpaca.json` (`sft: true`).
+- Init from base `...step16612_final.pt`; fresh optimizer.
+- LR 2e-5 → 2e-6 cosine, warmup 30, batch 64, ctx 512, betas [0.9,0.95], wd 0.0,
+  grad clip 1.0.
+- `training_steps` 2400 ≈ **~3 epochs** (153,600 example-draws / 51,002 train
+  examples, with replacement). Held out last 1000 examples for masked validation.
+- W&B run: `lessandro/cs336/sft_alpaca_deep6_1782286413.7466567`.
+- Wall-clock ~5 min on B200, ~$0.50.
+
+### How we decided "how long"
+SFT duration is **not** a compute/Chinchilla decision like pretraining. Convention
+is **1–3 epochs** (small curated data; >3–5 overfits / forgets). Alpaca itself used
+3. So 2400 was set as a **ceiling**, with held-out val + checkpoints every 600 steps
+so the real stopping point is found by **early stopping on val loss**, not fixed up
+front. Pretraining = scaling law; SFT = epoch convention + early stop.
+
+### Result
+- Train (masked) 3.39 → ~2.2–2.4; **val (masked, held-out) 3.50 → ~2.42** (PPL ≈ 11
+  over the response distribution; NOT comparable to the 3.42 pretraining loss —
+  different, response-only token set).
+- **No overfitting**: train ≈ val (gap ~0.1–0.2 nats), val **plateaued flat** from
+  ~step 1500, never turned up. 3 epochs was a safe ceiling; final checkpoint is good.
+- Final SFT checkpoint on `cs336-model-checkpoints`:
+  `sft_alpaca_deep6_1782286413.7466567_step*_final.pt`.
+
+### Qualitative (via inference.py `sft="alpaca"` template mode)
+- "What's the boiling temperature of water?" → "The boiling temperature of water is
+  8.8 degrees Fahrenheit.\<|endoftext|\>"  — **format perfect, fact wrong.**
+- "How many fingers on a hand?" → "There are 5." — correct.
+
+### Takeaway: format vs. facts
+SFT taught **behavior, not knowledge.** It learned to answer concisely, on-topic, and
+to emit `<|endoftext|>` and stop (no more news-article rambling). But factual errors
+(8.8°F vs 212°F) are the **67M param ceiling** — world knowledge lives in pretraining
+/ scale, and SFT can't inject it. The model is also **confidently wrong** (entropy
+~0.75) — SFT made it decisive, which is great for format and exposes the missing
+facts. Clean separation: SFT fixed behavior; knowledge is param-bound.
+
+### Code wiring added this session
+- `data.py`: `data_loading_with_masking` (response-only mask, truncation, train/val
+  index range), returns torch tensors (long x/y, bool mask) on device.
+- `train_model.py`: SFT branch (load tokens from mounted `cs336-sft-data` volume),
+  load base checkpoint, masked loss via `z[mask]`/`y[mask]`, held-out masked
+  validation, **unconditional final save** (this repo previously lacked one).
+- `inference.py`: `sft="alpaca"` mode wraps the prompt in the training template so
+  chat triggers the learned behavior.
+
+### Next ideas
+- Bigger pretrain (more params) is the lever for facts, not more SFT.
+- RLVR / GSM8K (assignment 5 style) for verifiable-reward improvement.
+- Multi-turn / better SFT mix (SmolTalk) if we want broader instruction-following.
+
+---
+
 ## 2026-06-23 — Scaling check: are we trained optimally? (+ cost / storage)
 
 Question: the final checkpoint trained for 45 min — (1) did we use all the

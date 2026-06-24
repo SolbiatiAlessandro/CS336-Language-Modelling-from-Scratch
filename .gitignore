@@ -2,3 +2,12 @@ __pycache__/
 .venv/
 wandb/
 model_checkpoints/
+
+# Assignment 5 (alignment) — heavy data & test fixtures, kept local-only
+assignment5-alignment/data/
+assignment5-alignment/tests/fixtures/
+assignment5-alignment/experiments/
+
+# editor / notebook cruft
+*.swp
+.ipynb_checkpoints/
