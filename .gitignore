@@ -4,10 +4,14 @@ wandb/
 model_checkpoints/
 
 # Assignment 5 (alignment) — heavy data & test fixtures, kept local-only
-assignment5-alignment/data/
-assignment5-alignment/tests/fixtures/
-assignment5-alignment/experiments/
+cs336_alignment/data/
+cs336_alignment/tests/fixtures/
+cs336_alignment/experiments/
 
 # editor / notebook cruft
 *.swp
+*.swo
 .ipynb_checkpoints/
+
+# W&B downloaded artifact cache (findings live in the cloud + commit msg)
+artifacts/
