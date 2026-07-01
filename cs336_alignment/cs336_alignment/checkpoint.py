@@ -1,5 +1,6 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch.nn.functional as F
 
 def get_model_and_tokenizer(model_id_or_dir: str, device: str):
     model = AutoModelForCausalLM.from_pretrained(
@@ -53,3 +54,21 @@ def tokenize_prompt_and_output(prompt_str, output_str, tokenizer):
             'input_ids': torch.stack(input_ids), 
             'labels': torch.stack(labels), 
             'response_mask': torch.stack(response_mask)}
+
+def get_response_log_probs(
+        model, input_ids, labels, return_token_entropy):
+    #import pdb;pdb.set_trace()
+    logits = model(input_ids)
+    probs = F.softmax(logits.logits, dim=-1)
+    logprobs = F.log_softmax(logits.logits, dim=-1)
+
+    B, T = labels.shape
+    _logprobs = logprobs.reshape(B * T, -1)
+    labels = labels.reshape(-1)
+    label_probs = _logprobs[torch.arange(B*T), labels].reshape(B, T)
+
+    res = {'log_probs': label_probs}
+    if return_token_entropy:
+        entropy = (-1 * probs * logprobs).sum(dim=-1)
+        res['token_entropy'] = entropy
+    return res
